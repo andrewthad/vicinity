@@ -13,6 +13,10 @@ module Data.Vicinity
   , insert
   , union
   , fromList
+  , uncheckedConcat
+  , splitLookup
+  , singleton
+  , singletonTree
   ) where
 
 import Control.Applicative (Applicative(..),(<$>),(<*>))
@@ -180,7 +184,9 @@ union (Vicinity a) (Vicinity b) = Vicinity (unionTree a b)
 
 unionTree :: Ord a => Tree a -> Tree a -> Tree a
 unionTree a (Tree LF) = a
-unionTree (Tree at) b@(Tree (BR _)) = case at of
+unionTree a (Tree (BR (T1 LF x LF))) = insertTree x a
+unionTree (Tree (BR (T1 LF x LF))) b = insertTree x b
+unionTree (Tree at) b@(Tree (BR _)) = case checkNodeValid at of
   LF -> b
   BR an -> 
     let (aLeft,aRight,aKey) = splitNearMedian an
@@ -201,9 +207,44 @@ unionTree (Tree at) b@(Tree (BR _)) = case at of
 splitNearMedian :: N n a -> (Tree a,Tree a,a)
 splitNearMedian n = case n of
   T2 treeLeft valLeft treeMid valRight treeRight ->
-    (Tree (t1 treeLeft valLeft treeMid), link (singleton valRight) (Tree treeRight), valRight)
+    (Tree (t1 treeLeft valLeft treeMid), link (singletonTree valRight) (Tree treeRight), valRight)
   T1 treeLeft valMid treeRight ->
-    (Tree treeLeft, link (singleton valMid) (Tree treeRight), valMid)
+    (Tree treeLeft, link (singletonTree valMid) (Tree treeRight), valMid)
+
+splitLookup :: Ord a => a -> Vicinity a -> (Vicinity a, Maybe a, Vicinity a)
+splitLookup a (Vicinity t) = case splitTreeAt a t of
+  (x,y,z) -> (Vicinity x, y, Vicinity z)
+
+uncheckedConcat :: Vicinity a -> Vicinity a -> Vicinity a
+uncheckedConcat (Vicinity a) (Vicinity b) = Vicinity (link a b)
+
+checkNodeValid :: Ord a => T n a -> T n a
+checkNodeValid LF = LF
+checkNodeValid y@(BR x) = case x of
+  T1 treeLeft valMid treeRight ->
+    let c1 = case treeLeft of
+          LF -> True
+          BR (T1 _ a _) -> a < valMid
+          BR (T2 _ _ _ a _) -> a < valMid
+        c2 = case treeRight of
+          LF -> True
+          BR (T1 _ a _) -> a > valMid
+          BR (T2 _ a _ _ _) -> a > valMid
+     in if c1 && c2 then y else error "checkNodeValid: invalid tree in T1 case"
+  T2 treeLeft valLeft treeMid valRight treeRight ->
+    let c1 = case treeLeft of
+          LF -> True
+          BR (T1 _ a _) -> a < valLeft
+          BR (T2 _ _ _ a _) -> a < valLeft
+        c2 = case treeRight of
+          LF -> True
+          BR (T1 _ a _) -> a > valRight
+          BR (T2 _ a _ _ _) -> a > valRight
+        c3 = case treeMid of
+          LF -> True
+          BR (T1 _ a _) -> a > valLeft && a < valRight
+          BR (T2 _ a _ b _) -> a > valLeft && b < valRight
+     in if c1 && c2 && c3 && valLeft < valRight then y else error "checkNodeValid: invalid tree in T2 case"
 
 -- Everything less than the key goes to the left tree.
 -- Everything greater than the key goes into the right
@@ -221,7 +262,7 @@ splitNearMedian n = case n of
 --    so we would end up doing O(logn) work instead of O(logn * logn)
 --    work, I think.
 splitTreeAt :: forall a. Ord a => a -> Tree a -> (Tree a, Maybe a, Tree a)
-splitTreeAt a (Tree x) = go x empty empty where
+splitTreeAt a (Tree x) = go (checkNodeValid x) empty empty where
   go :: forall (n :: Nat).
        T n a
     -> Tree a -- accumulated tree left of split
@@ -230,19 +271,19 @@ splitTreeAt a (Tree x) = go x empty empty where
   go LF accLeft accRight = (accLeft,Nothing,accRight)
   go (BR (T1 treeLeft valMid treeRight)) accLeft accRight =
     case compare valMid a of -- descend rightward when middle less than needle
-      LT -> go treeRight (link accLeft (link (Tree treeLeft) (singleton valMid))) accRight
+      LT -> go treeRight (link accLeft (link (Tree treeLeft) (singletonTree valMid))) accRight
       EQ -> (link accLeft (Tree treeLeft), Just valMid, link (Tree treeRight) accRight)
-      GT -> go treeLeft accLeft (link (link (singleton valMid) (Tree treeRight)) accRight)
+      GT -> go treeLeft accLeft (link (link (singletonTree valMid) (Tree treeRight)) accRight)
   go (BR (T2 treeLeft valLeft treeMid valRight treeRight)) accLeft accRight =
     case compare valRight a of
-      LT -> go treeRight (link accLeft (link (Tree (t1 treeLeft valLeft treeMid)) (singleton valRight))) accRight
+      LT -> go treeRight (link accLeft (link (Tree (t1 treeLeft valLeft treeMid)) (singletonTree valRight))) accRight
       EQ -> (link accLeft (Tree (t1 treeLeft valLeft treeMid)), Just valRight, link (Tree treeRight) accRight)
       GT -> case compare valLeft a of -- the in-between case is interesting
         LT -> go treeMid
-          (link accLeft (link (Tree treeLeft) (singleton valLeft))) 
-          (link (link (singleton valRight) (Tree treeRight)) accRight)
+          (link accLeft (link (Tree treeLeft) (singletonTree valLeft))) 
+          (link (link (singletonTree valRight) (Tree treeRight)) accRight)
         EQ -> (link accLeft (Tree treeLeft), Just valLeft, link (Tree (t1 treeMid valRight treeRight)) accRight)
-        GT -> go treeLeft accLeft (link (link (singleton valLeft) (Tree (t1 treeMid valRight treeRight))) accRight)
+        GT -> go treeLeft accLeft (link (link (singletonTree valLeft) (Tree (t1 treeMid valRight treeRight))) accRight)
 
 link :: Tree a -> Tree a -> Tree a
 link (Tree n) (Tree m) = case compareTreeHeight n m of
@@ -264,7 +305,15 @@ linkLeft (GteGt gte) (BR t) m = case t of
     Right (tiLeft,valMid,tiRight) -> Right (t1 ti1 v1 ti2, v2, t1 tiLeft valMid tiRight)
 
 linkRight :: Gte m n -> T n a -> T m a -> Either (T m a) (T m a, a, T m a)
-linkRight = error "linkRight: write me, symmetric to linkLeft"
+linkRight GteEq n m = linkLevel n m
+linkRight (GteGt gte) n (BR t) = case t of
+  T1 ti1 v1 ti2 -> case linkRight gte n ti1 of
+    Left tiNew -> Left (t1 tiNew v1 ti2)
+    Right (tiLeft,valMid,tiRight) -> Left (t2 tiLeft valMid tiRight v1 ti2)
+  T2 ti1 v1 ti2 v2 ti3 -> case linkRight gte n ti1 of
+    Left tiNew -> Left (t2 tiNew v1 ti2 v2 ti3)
+    Right (tiLeft,valMid,tiRight) -> Right (t1 tiLeft valMid tiRight, v1, t1 ti2 v2 ti3)
+
 
 -- This implementation could be CPSed instead. It would probably
 -- look cleaner.
@@ -286,9 +335,9 @@ linkLevel (BR n1) (BR n2) = case n1 of
       Right (tLeft,vMid,tRight) -> Right (t2 ti1 v1 ti2 v2 tLeft, vMid, t2 tRight v3 ti5 v4 ti6)
     T1 ti4 v3 ti5 -> case linkLevel ti3 ti4 of
       Left tNew ->
-        Right (t1 ti1 v1 tNew, v2, t1 ti4 v3 ti5)
+        Right (t1 ti1 v1 ti2, v2, t1 tNew v3 ti5)
       Right (tLeft,vMid,tRight) ->
-        Right (t2 ti1 v1 tLeft vMid tRight, v2, t1 ti4 v3 ti5)
+        Right (t2 ti1 v1 ti2 v2 tLeft, vMid, t1 tRight v3 ti5)
 
 insertTree :: forall a. Ord a => a -> Tree a -> Tree a
 insertTree x (Tree tree) = ins tree Tree (\a b c -> Tree (t1 a b c))
@@ -313,8 +362,11 @@ insertTree x (Tree tree) = ins tree Tree (\a b c -> Tree (t1 a b c))
             xgtb = ins c (\k -> keep (t1 a b k)) (\p q r -> keep (t2 a b p q r))
             xeqb = keep (t1 a x c)
 
-singleton :: a -> Tree a
-singleton a = Tree (t1 LF a LF)
+singletonTree :: a -> Tree a
+singletonTree a = Tree (t1 LF a LF)
+
+singleton :: a -> Vicinity a
+singleton a = Vicinity (singletonTree a)
 
 empty :: Tree a
 empty = Tree LF
