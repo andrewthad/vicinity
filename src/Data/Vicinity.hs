@@ -186,7 +186,7 @@ unionTree :: Ord a => Tree a -> Tree a -> Tree a
 unionTree a (Tree LF) = a
 unionTree a (Tree (BR (T1 LF x LF))) = insertTree x a
 unionTree (Tree (BR (T1 LF x LF))) b = insertTree x b
-unionTree (Tree at) b@(Tree (BR _)) = case checkNodeValid at of
+unionTree (Tree at) b@(Tree (BR _)) = case at of
   LF -> b
   BR an -> 
     let (aLeft,aRight,aKey) = splitNearMedian an
@@ -218,9 +218,9 @@ splitLookup a (Vicinity t) = case splitTreeAt a t of
 uncheckedConcat :: Vicinity a -> Vicinity a -> Vicinity a
 uncheckedConcat (Vicinity a) (Vicinity b) = Vicinity (link a b)
 
-checkNodeValid :: Ord a => T n a -> T n a
-checkNodeValid LF = LF
-checkNodeValid y@(BR x) = case x of
+_checkNodeValid :: Ord a => T n a -> T n a
+_checkNodeValid LF = LF
+_checkNodeValid y@(BR x) = case x of
   T1 treeLeft valMid treeRight ->
     let c1 = case treeLeft of
           LF -> True
@@ -262,7 +262,7 @@ checkNodeValid y@(BR x) = case x of
 --    so we would end up doing O(logn) work instead of O(logn * logn)
 --    work, I think.
 splitTreeAt :: forall a. Ord a => a -> Tree a -> (Tree a, Maybe a, Tree a)
-splitTreeAt a (Tree x) = go (checkNodeValid x) empty empty where
+splitTreeAt a (Tree x) = go x empty empty where
   go :: forall (n :: Nat).
        T n a
     -> Tree a -- accumulated tree left of split
