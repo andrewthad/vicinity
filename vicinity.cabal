@@ -15,18 +15,31 @@ extra-source-files:
   ChangeLog.md
   README.md
 
+flag slow
+  description:
+    Build the library with provably-correct arithmetic on natural numbers. Not recommended.
+  default: True
+  manual: False
+
 source-repository head
   type: git
   location: https://github.com/andrewthad/vicinity
 
 library
-  hs-source-dirs:
-    src
+  hs-source-dirs: src
+  if flag(slow)
+    hs-source-dirs: src-slow
+  if flag(slow)
+    hs-source-dirs: src-fast
   build-depends:
-    base >=4.7 && <5
+      base >=4.7 && <5
+    , semigroups >= 0.17 && < 0.19
   exposed-modules:
     Data.Vicinity
     Data.Vicinities
+  other-modules:
+    Data.Nat
+    Data.Nat.Arithmetic
   default-language: Haskell2010
 
 test-suite test

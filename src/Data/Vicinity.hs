@@ -24,7 +24,10 @@ import Data.Monoid
 import Data.Foldable (Foldable(..),toList)
 import Data.Traversable (Traversable(..))
 import Data.Kind
-import Data.Type.Equality
+import Data.Semigroup (Semigroup)
+import Data.Nat (Nat(..))
+import Data.Nat.Arithmetic (SNat,Gte,caseGte,natDiff,succSNat,zeroSNat)
+import qualified Data.Semigroup
 
 newtype Vicinity a = Vicinity (Tree a)
 
@@ -36,6 +39,9 @@ instance Eq a => Eq (Vicinity a) where
 
 instance Ord a => Ord (Vicinity a) where
   compare a b = compare (toList a) (toList b)
+
+instance Ord a => Semigroup (Vicinity a) where
+  (<>) = union
 
 instance Ord a => Monoid (Vicinity a) where
   mempty = Vicinity empty
@@ -64,8 +70,6 @@ t1 a b c = BR (T1 a b c)
 t2 :: T n a -> a -> T n a -> a -> T n a -> T ('S n) a
 t2 a b c d e = BR (T2 a b c d e)
 
-data Nat = Z | S Nat
-
 data N n a
   = T1 (T n a) a (T n a)
   | T2 (T n a) a (T n a) a (T n a)
@@ -80,101 +84,11 @@ data Tree a where
 type Keep t n a = T n a -> t
 type Push t n a = T n a -> a -> T n a -> t
 
--- assumes that one everything in the first tree
--- is smaller than everything in the second tree
--- joinOrdered :: forall a. Tree a -> Tree a -> Tree a
--- joinOrdered (Tree t1) (Tree t2) = combine t1 t2
---   where
---     combine :: forall n m t. T n a -> T m b -> Gte n m
-
-data Gte :: Nat -> Nat -> Type where
-  GteEq :: Gte n n 
-  GteGt :: Gte n m -> Gte ('S n) m
-
-data SNat :: Nat -> Type where
-  SZ :: SNat 'Z
-  SS :: SNat n -> SNat ('S n)
-
-data Addition :: Nat -> Nat -> Nat -> Type where
-  AdditionBase :: Addition 'Z n n
-  AdditionStep :: Addition n ('S m) p -> Addition ('S n) m p
-
-type family Plus (n :: Nat) (m :: Nat) :: Nat where
-  Plus 'Z m = m
-  Plus ('S n) m = 'S (Plus n m)
-
-sucRightProof :: SNat n -> SNat m -> (Plus n ('S m) :~: 'S (Plus n m))
-sucRightProof SZ _ = Refl
-sucRightProof (SS n) m = case sucRightProof n m of
-  Refl -> Refl
-
-additionToProof :: SNat n -> SNat m -> Addition n m p -> (Plus n m :~: p)
-additionToProof _ _ AdditionBase = Refl
-additionToProof (SS np) m (AdditionStep a) = case additionToProof np (SS m) a of
-  Refl -> case sucRightProof np m of
-    Refl -> Refl
-
-rightIdentity :: SNat n -> (Plus n 'Z :~: n)
-rightIdentity SZ = Refl
-rightIdentity (SS n) = case rightIdentity n of
-  Refl -> Refl
-
-makeGte :: SNat n -> SNat k -> Gte (Plus k n) n
-makeGte _ SZ = GteEq
-makeGte n (SS k) = GteGt (makeGte n k)
-
-incAddition :: Addition n m p -> Addition ('S n) m ('S p)
-incAddition AdditionBase = AdditionStep AdditionBase
-incAddition (AdditionStep a) = AdditionStep (incAddition a)
-
-decAddition :: SNat n -> SNat m -> Addition ('S n) m ('S p) -> Addition n m p
-decAddition SZ _ (AdditionStep AdditionBase) = AdditionBase
-decAddition (SS SZ) _ (AdditionStep (AdditionStep AdditionBase)) = AdditionStep AdditionBase
-decAddition (SS (SS npp)) m (AdditionStep a) = AdditionStep (decAddition (SS npp) (SS m) a)
-
-incAdditionSecond :: Addition n m p -> Addition n ('S m) ('S p)
-incAdditionSecond AdditionBase = AdditionBase
-incAdditionSecond (AdditionStep a) = AdditionStep (incAdditionSecond a)
-
-tweakAddition :: SNat n -> SNat m -> Addition ('S n) m p -> Addition n ('S m) p
-tweakAddition n m a = decAddition n (SS m) (incAdditionSecond a)
-
-addZero :: SNat n -> Addition n 'Z n
-addZero SZ = AdditionBase
-addZero (SS np) = incAddition (addZero np)
-
-flipAddition :: SNat n -> SNat m -> Addition n m p -> Addition m n p
-flipAddition SZ m AdditionBase = addZero m
-flipAddition (SS np) m (AdditionStep a) = tweakAddition m np (flipAddition np (SS m) a)
-
-emptyAddition :: SNat n -> Addition n 'Z p -> (n :~: p)
-emptyAddition n a = case additionToProof n SZ a of
-  Refl -> case rightIdentity n of
-    Refl -> Refl
-
--- additionToGte :: Addition k n p -> Gte p n
--- additionToGte AdditionBase = GteEq
--- additionToGte (AdditionStep s) = GteGt (additionToGte s)
-
-natDiff :: forall (n :: Nat) (m :: Nat). SNat n -> SNat m -> Either (Gte n m) (Gte m n)
-natDiff n m = go SZ n AdditionBase m AdditionBase
-  where
-  go :: forall acc n2 m2. SNat acc -> SNat n2 -> Addition acc n2 n -> SNat m2 -> Addition acc m2 m -> Either (Gte n m) (Gte m n)
-  go acc (SS n2p) na (SS m2p) ma = go (SS acc) n2p (AdditionStep na) m2p (AdditionStep ma)
-  go acc n2@(SS _) na SZ ma = case emptyAddition acc ma of
-    Refl -> case flipAddition m n2 na of
-      addFlipped -> case additionToProof n2 m addFlipped of
-        Refl -> Left (makeGte m n2)
-  go acc SZ na m2 ma = case emptyAddition acc na of
-    Refl -> case flipAddition n m2 ma of
-      addFlipped -> case additionToProof m2 n addFlipped of
-        Refl -> Right (makeGte n m2)
-
 treeToHeight :: T n a -> SNat n 
-treeToHeight LF = SZ
+treeToHeight LF = zeroSNat
 treeToHeight (BR n) = case n of
-  T1 t _ _ -> SS (treeToHeight t)
-  T2 t _ _ _ _ -> SS (treeToHeight t)
+  T1 t _ _ -> succSNat (treeToHeight t)
+  T2 t _ _ _ _ -> succSNat (treeToHeight t)
 
 compareTreeHeight :: T n a -> T m a -> Either (Gte n m) (Gte m n)
 compareTreeHeight a b = natDiff (treeToHeight a) (treeToHeight b)
@@ -294,26 +208,38 @@ link (Tree n) (Tree m) = case compareTreeHeight n m of
     Left r -> Tree r
     Right (tiLeft,valMid,tiRight) -> Tree (t1 tiLeft valMid tiRight)
 
-linkLeft :: Gte n m -> T n a -> T m a -> Either (T n a) (T n a, a, T n a)
-linkLeft GteEq n m = linkLevel n m
-linkLeft (GteGt gte) (BR t) m = case t of
-  T1 ti1 v1 ti2 -> case linkLeft gte ti2 m of
-    Left tiNew -> Left (t1 ti1 v1 tiNew)
-    Right (tiLeft,valMid,tiRight) -> Left (t2 ti1 v1 tiLeft valMid tiRight)
-  T2 ti1 v1 ti2 v2 ti3 -> case linkLeft gte ti3 m of
-    Left tiNew -> Left (t2 ti1 v1 ti2 v2 tiNew)
-    Right (tiLeft,valMid,tiRight) -> Right (t1 ti1 v1 ti2, v2, t1 tiLeft valMid tiRight)
+linkLeft :: forall n m a. Gte n m -> T n a -> T m a -> Either (T n a) (T n a, a, T n a)
+linkLeft gt n m = caseGte
+  gt
+  (linkLevel n m)
+  f
+  where
+  f :: forall (p :: Nat). ('S p ~ n) => Gte p m -> Either (T n a) (T n a, a, T n a)
+  f gte = case n of
+    BR t -> case t of
+      T1 ti1 v1 ti2 -> case linkLeft gte ti2 m of
+        Left tiNew -> Left (t1 ti1 v1 tiNew)
+        Right (tiLeft,valMid,tiRight) -> Left (t2 ti1 v1 tiLeft valMid tiRight)
+      T2 ti1 v1 ti2 v2 ti3 -> case linkLeft gte ti3 m of
+        Left tiNew -> Left (t2 ti1 v1 ti2 v2 tiNew)
+        Right (tiLeft,valMid,tiRight) -> Right (t1 ti1 v1 ti2, v2, t1 tiLeft valMid tiRight)
 
-linkRight :: Gte m n -> T n a -> T m a -> Either (T m a) (T m a, a, T m a)
-linkRight GteEq n m = linkLevel n m
-linkRight (GteGt gte) n (BR t) = case t of
-  T1 ti1 v1 ti2 -> case linkRight gte n ti1 of
-    Left tiNew -> Left (t1 tiNew v1 ti2)
-    Right (tiLeft,valMid,tiRight) -> Left (t2 tiLeft valMid tiRight v1 ti2)
-  T2 ti1 v1 ti2 v2 ti3 -> case linkRight gte n ti1 of
-    Left tiNew -> Left (t2 tiNew v1 ti2 v2 ti3)
-    Right (tiLeft,valMid,tiRight) -> Right (t1 tiLeft valMid tiRight, v1, t1 ti2 v2 ti3)
 
+linkRight :: forall n m a. Gte m n -> T n a -> T m a -> Either (T m a) (T m a, a, T m a)
+linkRight gt n m = caseGte
+  gt
+  (linkLevel n m)
+  f
+  where
+  f :: forall (p :: Nat). ('S p ~ m) => Gte p n -> Either (T m a) (T m a, a, T m a)
+  f gte = case m of
+    BR t -> case t of
+      T1 ti1 v1 ti2 -> case linkRight gte n ti1 of
+        Left tiNew -> Left (t1 tiNew v1 ti2)
+        Right (tiLeft,valMid,tiRight) -> Left (t2 tiLeft valMid tiRight v1 ti2)
+      T2 ti1 v1 ti2 v2 ti3 -> case linkRight gte n ti1 of
+        Left tiNew -> Left (t2 tiNew v1 ti2 v2 ti3)
+        Right (tiLeft,valMid,tiRight) -> Right (t1 tiLeft valMid tiRight, v1, t1 ti2 v2 ti3)
 
 -- This implementation could be CPSed instead. It would probably
 -- look cleaner.
