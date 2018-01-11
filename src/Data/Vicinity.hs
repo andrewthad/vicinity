@@ -17,22 +17,25 @@ module Data.Vicinity
   , splitLookup
   , singleton
   , singletonTree
+  , foldrWithKey
+  , toList
   ) where
 
 import Control.Applicative (Applicative(..),(<$>),(<*>))
 import Data.Monoid
-import Data.Foldable (Foldable(..),toList)
+import Data.Foldable (Foldable)
 import Data.Traversable (Traversable(..))
 import Data.Kind
 import Data.Semigroup (Semigroup)
 import Data.Nat (Nat(..))
 import Data.Nat.Arithmetic (SNat,Gte,caseGte,natDiff,succSNat,zeroSNat)
 import qualified Data.Semigroup
+import qualified Data.Foldable as F
 
 newtype Vicinity k v = Vicinity (Tree k v)
 
 instance (Show k, Show v) => Show (Vicinity k v) where
-  show a = "fromList (" ++ show (toList a) ++ ")"
+  show a = "fromList " ++ show (toList a)
 
 instance (Eq k, Eq v) => Eq (Vicinity k v) where
   a == b = toList a == toList b
@@ -51,9 +54,17 @@ instance (Ord k, Monoid v) => Monoid (Vicinity k v) where
 instance Foldable (Vicinity k) where
   foldMap f (Vicinity t) = foldMap f t
 
--- TODO: write this
--- toList :: Vicinity k v -> [(k,v)]
--- toList = _
+foldrWithKey :: (k -> v -> a -> a) -> a -> Vicinity k v -> a
+foldrWithKey f a (Vicinity (Tree x)) = foldrWithKeyInternal f a x
+
+foldrWithKeyInternal :: (k -> v -> a -> a) -> a -> T n k v -> a
+foldrWithKeyInternal _ a LF = a
+foldrWithKeyInternal f a (BR _ (T1 x k v y)) = foldrWithKeyInternal f (f k v (foldrWithKeyInternal f a y)) x
+foldrWithKeyInternal f a (BR _ (T2 x k1 v1 y k2 v2 z)) = 
+  foldrWithKeyInternal f (f k1 v1 (foldrWithKeyInternal f (f k2 v2 (foldrWithKeyInternal f a z)) y)) x
+
+toList :: Vicinity k v -> [(k,v)]
+toList = foldrWithKey (\k v a -> (k,v) : a) []
 
 fromList :: (Ord k, Monoid v) => [(k,v)] -> Vicinity k v
 fromList = foldr (\(k,v) -> insert k v) (Vicinity empty)
@@ -120,8 +131,11 @@ unionTree (Tree at) b@(Tree (BR _ _)) = case at of
   LF -> b
   BR _ an -> 
     let (aLeft,aRight,aKey) = splitNearMedian an
-        (bLeft,_,bRight) = splitTreeAt aKey b
-     in link (unionTree aLeft bLeft) (unionTree aRight bRight)
+        (bLeft,mbVal,bRight) = splitTreeAt aKey b
+        -- The weird insert in the right argument to link is
+        -- a poorly performing way to make sure the middle
+        -- value doesn't get discarded.
+     in link (unionTree aLeft bLeft) (unionTree (maybe aRight (\bVal -> insertTree aKey bVal aRight) mbVal) bRight)
 
 -- Performance-wise, this may be able to be improved by
 -- a small constant amount. Also, this could actually work

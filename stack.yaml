@@ -3,7 +3,7 @@ packages:
 - .
 - location:
     git: 'https://github.com/andrewthad/quickcheck-classes'
-    commit: '2408b471ea5f3868e798a1c083d1f8b019d8ad97'
+    commit: 'e19c5b025140f2ae46d49b022e07815d62d8d562'
   extra-dep: true
 
 # Override default flag values for local packages and extra-deps
