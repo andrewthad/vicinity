@@ -13,6 +13,7 @@ import Data.Monoid
 import Numeric.Natural (Natural)
 import Test.QuickCheck.Classes as QC
 import qualified Data.Vicinity as VC
+import qualified Data.Map.Strict as M
 
 main :: IO ()
 main = props
@@ -28,6 +29,11 @@ props = do
   putStrLn "Insert-Fold Identity"
   quickCheck $ \(v :: Vicinity Integer (Sum Integer)) ->
     VC.foldrWithKey VC.insert mempty v == v
+  putStrLn "fromList agrees with Data.Map"
+  quickCheck $ \(xs :: [(Word,Sum Word)]) ->
+    let expectation = M.toList (M.fromListWith mappend xs)
+        actual = VC.toList (VC.fromList xs)
+     in expectation == actual
 
 instance (Ord k, Arbitrary k, Arbitrary v, Monoid v) => Arbitrary (Vicinity k v) where
   arbitrary = do

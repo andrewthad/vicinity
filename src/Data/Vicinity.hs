@@ -100,13 +100,27 @@ t2 a bk bv c dk dv e = case a of
 data N n k v
   = T1 (T n k v) k v (T n k v)
   | T2 (T n k v) k v (T n k v) k v (T n k v)
+  deriving (Show)
 
 data T n k v where
   BR :: v -> N n k v -> T ('S n) k v
   LF :: T 'Z k v
 
+-- This exists for debugging purposes
+instance (Show k, Show v) => Show (T n k v) where
+  showsPrec _ LF = showString "LF"
+  showsPrec d (BR v n) = showParen (d > 10)
+    $ showString "BR "
+    . showsPrec 11 v
+    . showChar ' '
+    . showsPrec 11 n
+
 data Tree k v where
   Tree :: T n k v -> Tree k v
+
+-- Exists for debugging purposes
+instance (Show k, Show v) => Show (Tree k v) where
+  showsPrec d (Tree x) = showsPrec d x
 
 type Keep t n k v = T n k v -> t
 type Push t n k v = T n k v -> k -> v -> T n k v -> t
@@ -142,7 +156,9 @@ unionTree (Tree at) b@(Tree (BR _ _)) = case at of
 -- just fine on trees of height zero, but I wrote it to
 -- not accept them so that the union function would
 -- have to handle the base case correctly instead of
--- blindly recursing forever.
+-- blindly recursing forever. Actually, nevermind,
+-- this would not work on trees of height zero since
+-- it could not return the key.
 --
 -- The returned triple includes the approximate median
 -- but does not strip it out. The median goes in the
@@ -309,7 +325,7 @@ insertTree k v (Tree tree) = ins tree Tree (\a bk bv c -> Tree (t1 a bk bv c))
             xbtw = ins c (\x -> keep (t2 a bk bv x dk dv e)) (\p qk qv r -> push (t1 a bk bv p) qk qv (t1 r dk dv e))
             xgtd = ins e (\x -> keep (t2 a bk bv c dk dv x)) (\p qk qv r -> push (t1 a bk bv c) dk dv (t1 p qk qv r))
             xeqb = keep (t2 a k (mappend bv v) c dk dv e)
-            xeqd = keep (t2 a bk dv c k (mappend v dv) e)
+            xeqd = keep (t2 a bk bv c k (mappend v dv) e)
 
         i (T1 a bk bv c) keep _ = select1 k bk xltb xeqb xgtb
           where

@@ -52,4 +52,5 @@ test-suite test
     , vicinity
     , QuickCheck
     , quickcheck-classes == 0.3.1
+    , containers
   default-language: Haskell2010
