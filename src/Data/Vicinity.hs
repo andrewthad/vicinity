@@ -51,11 +51,15 @@ instance (Ord k, Monoid v) => Monoid (Vicinity k v) where
 instance Foldable (Vicinity k) where
   foldMap f (Vicinity t) = foldMap f t
 
-fromList :: (Foldable t, Ord k, Monoid v) => t (k,v) -> Vicinity k v
-fromList = foldr insert (Vicinity empty)
+-- TODO: write this
+-- toList :: Vicinity k v -> [(k,v)]
+-- toList = _
 
-insert :: (Ord k, Monoid v) => a -> Vicinity k v -> Vicinity k v
-insert a (Vicinity t) = Vicinity (insertTree a t)
+fromList :: (Ord k, Monoid v) => [(k,v)] -> Vicinity k v
+fromList = foldr (\(k,v) -> insert k v) (Vicinity empty)
+
+insert :: (Ord k, Monoid v) => k -> v -> Vicinity k v -> Vicinity k v
+insert k v (Vicinity t) = Vicinity (insertTree k v t)
 
 select1 :: Ord a => a -> a -> p -> p -> p -> p
 select1 x y lt eq gt
@@ -98,9 +102,9 @@ type Push t n k v = T n k v -> k -> v -> T n k v -> t
 
 treeToHeight :: T n k v -> SNat n 
 treeToHeight LF = zeroSNat
-treeToHeight (BR n) = case n of
-  T1 t _ _ -> succSNat (treeToHeight t)
-  T2 t _ _ _ _ -> succSNat (treeToHeight t)
+treeToHeight (BR _ n) = case n of
+  T1 t _ _ _ -> succSNat (treeToHeight t)
+  T2 t _ _ _ _ _ _ -> succSNat (treeToHeight t)
 
 compareTreeHeight :: T n k v -> T m k v -> Either (Gte n m) (Gte m n)
 compareTreeHeight a b = natDiff (treeToHeight a) (treeToHeight b)
@@ -110,11 +114,11 @@ union (Vicinity a) (Vicinity b) = Vicinity (unionTree a b)
 
 unionTree :: (Ord k, Monoid v) => Tree k v -> Tree k v -> Tree k v
 unionTree a (Tree LF) = a
-unionTree a (Tree (BR (T1 LF x LF))) = insertTree x a
-unionTree (Tree (BR (T1 LF x LF))) b = insertTree x b
-unionTree (Tree at) b@(Tree (BR _)) = case at of
+unionTree a (Tree (BR _ (T1 LF k v LF))) = insertTree k v a
+unionTree (Tree (BR _ (T1 LF k v LF))) b = insertTree k v b
+unionTree (Tree at) b@(Tree (BR _ _)) = case at of
   LF -> b
-  BR an -> 
+  BR _ an -> 
     let (aLeft,aRight,aKey) = splitNearMedian an
         (bLeft,_,bRight) = splitTreeAt aKey b
      in link (unionTree aLeft bLeft) (unionTree aRight bRight)
@@ -130,47 +134,47 @@ unionTree (Tree at) b@(Tree (BR _)) = case at of
 -- but does not strip it out. The median goes in the
 -- right tree. Changing this could lead to a small
 -- performance improvement if linkWithKey were implemented.
-splitNearMedian :: N n k v -> (Tree k v,Tree k v,k)
+splitNearMedian :: Monoid v => N n k v -> (Tree k v,Tree k v,k)
 splitNearMedian n = case n of
-  T2 treeLeft valLeft treeMid valRight treeRight ->
-    (Tree (t1 treeLeft valLeft treeMid), link (singletonTree valRight) (Tree treeRight), valRight)
-  T1 treeLeft valMid treeRight ->
-    (Tree treeLeft, link (singletonTree valMid) (Tree treeRight), valMid)
+  T2 treeLeft keyLeft valLeft treeMid keyRight valRight treeRight ->
+    (Tree (t1 treeLeft keyLeft valLeft treeMid), link (singletonTree keyRight valRight) (Tree treeRight), keyRight)
+  T1 treeLeft keyMid valMid treeRight ->
+    (Tree treeLeft, link (singletonTree keyMid valMid) (Tree treeRight), keyMid)
 
-splitLookup :: Ord k => k -> Vicinity k v -> (Vicinity k v, Maybe v, Vicinity k v)
+splitLookup :: (Ord k, Monoid v) => k -> Vicinity k v -> (Vicinity k v, Maybe v, Vicinity k v)
 splitLookup a (Vicinity t) = case splitTreeAt a t of
   (x,y,z) -> (Vicinity x, y, Vicinity z)
 
-uncheckedConcat :: Vicinity k v -> Vicinity k v -> Vicinity k v
+uncheckedConcat :: Monoid v => Vicinity k v -> Vicinity k v -> Vicinity k v
 uncheckedConcat (Vicinity a) (Vicinity b) = Vicinity (link a b)
 
 _checkNodeValid :: Ord k => T n k v -> T n k v
 _checkNodeValid LF = LF
-_checkNodeValid y@(BR x) = case x of
-  T1 treeLeft valMid treeRight ->
+_checkNodeValid y@(BR _ x) = case x of
+  T1 treeLeft keyMid _ treeRight ->
     let c1 = case treeLeft of
           LF -> True
-          BR (T1 _ a _) -> a < valMid
-          BR (T2 _ _ _ a _) -> a < valMid
+          BR _ (T1 _ a _ _) -> a < keyMid
+          BR _ (T2 _ _ _ _ a _ _) -> a < keyMid
         c2 = case treeRight of
           LF -> True
-          BR (T1 _ a _) -> a > valMid
-          BR (T2 _ a _ _ _) -> a > valMid
+          BR _ (T1 _ a _ _) -> a > keyMid
+          BR _ (T2 _ a _ _ _ _ _) -> a > keyMid
      in if c1 && c2 then y else error "checkNodeValid: invalid tree in T1 case"
-  T2 treeLeft valLeft treeMid valRight treeRight ->
+  T2 treeLeft keyLeft _ treeMid keyRight _ treeRight ->
     let c1 = case treeLeft of
           LF -> True
-          BR (T1 _ a _) -> a < valLeft
-          BR (T2 _ _ _ a _) -> a < valLeft
+          BR _ (T1 _ a _ _) -> a < keyLeft
+          BR _ (T2 _ _ _ _ a _ _) -> a < keyLeft
         c2 = case treeRight of
           LF -> True
-          BR (T1 _ a _) -> a > valRight
-          BR (T2 _ a _ _ _) -> a > valRight
+          BR _ (T1 _ a _ _) -> a > keyRight
+          BR _ (T2 _ a _ _ _ _ _) -> a > keyRight
         c3 = case treeMid of
           LF -> True
-          BR (T1 _ a _) -> a > valLeft && a < valRight
-          BR (T2 _ a _ b _) -> a > valLeft && b < valRight
-     in if c1 && c2 && c3 && valLeft < valRight then y else error "checkNodeValid: invalid tree in T2 case"
+          BR _ (T1 _ a _ _) -> a > keyLeft && a < keyRight
+          BR _ (T2 _ a _ _ b _ _) -> a > keyLeft && b < keyRight
+     in if c1 && c2 && c3 && keyLeft < keyRight then y else error "checkNodeValid: invalid tree in T2 case"
 
 -- Everything less than the key goes to the left tree.
 -- Everything greater than the key goes into the right
@@ -187,7 +191,7 @@ _checkNodeValid y@(BR x) = case x of
 --    whose size differ by at most a constant is O(1),
 --    so we would end up doing O(logn) work instead of O(logn * logn)
 --    work, I think.
-splitTreeAt :: forall k v. Ord k => k -> Tree k v -> (Tree k v, Maybe v, Tree k v)
+splitTreeAt :: forall k v. (Ord k, Monoid v) => k -> Tree k v -> (Tree k v, Maybe v, Tree k v)
 splitTreeAt a (Tree x) = go x empty empty where
   go :: forall (n :: Nat).
        T n k v
@@ -195,32 +199,32 @@ splitTreeAt a (Tree x) = go x empty empty where
     -> Tree k v -- accumulated tree right of split
     -> (Tree k v, Maybe v, Tree k v)
   go LF accLeft accRight = (accLeft,Nothing,accRight)
-  go (BR (T1 treeLeft valMid treeRight)) accLeft accRight =
-    case compare valMid a of -- descend rightward when middle less than needle
-      LT -> go treeRight (link accLeft (link (Tree treeLeft) (singletonTree valMid))) accRight
+  go (BR _ (T1 treeLeft keyMid valMid treeRight)) accLeft accRight =
+    case compare keyMid a of -- descend rightward when middle less than needle
+      LT -> go treeRight (link accLeft (link (Tree treeLeft) (singletonTree keyMid valMid))) accRight
       EQ -> (link accLeft (Tree treeLeft), Just valMid, link (Tree treeRight) accRight)
-      GT -> go treeLeft accLeft (link (link (singletonTree valMid) (Tree treeRight)) accRight)
-  go (BR (T2 treeLeft valLeft treeMid valRight treeRight)) accLeft accRight =
-    case compare valRight a of
-      LT -> go treeRight (link accLeft (link (Tree (t1 treeLeft valLeft treeMid)) (singletonTree valRight))) accRight
-      EQ -> (link accLeft (Tree (t1 treeLeft valLeft treeMid)), Just valRight, link (Tree treeRight) accRight)
-      GT -> case compare valLeft a of -- the in-between case is interesting
+      GT -> go treeLeft accLeft (link (link (singletonTree keyMid valMid) (Tree treeRight)) accRight)
+  go (BR _ (T2 treeLeft keyLeft valLeft treeMid keyRight valRight treeRight)) accLeft accRight =
+    case compare keyRight a of
+      LT -> go treeRight (link accLeft (link (Tree (t1 treeLeft keyLeft valLeft treeMid)) (singletonTree keyRight valRight))) accRight
+      EQ -> (link accLeft (Tree (t1 treeLeft keyLeft valLeft treeMid)), Just valRight, link (Tree treeRight) accRight)
+      GT -> case compare keyLeft a of -- the in-between case is interesting
         LT -> go treeMid
-          (link accLeft (link (Tree treeLeft) (singletonTree valLeft))) 
-          (link (link (singletonTree valRight) (Tree treeRight)) accRight)
-        EQ -> (link accLeft (Tree treeLeft), Just valLeft, link (Tree (t1 treeMid valRight treeRight)) accRight)
-        GT -> go treeLeft accLeft (link (link (singletonTree valLeft) (Tree (t1 treeMid valRight treeRight))) accRight)
+          (link accLeft (link (Tree treeLeft) (singletonTree keyLeft valLeft))) 
+          (link (link (singletonTree keyRight valRight) (Tree treeRight)) accRight)
+        EQ -> (link accLeft (Tree treeLeft), Just valLeft, link (Tree (t1 treeMid keyRight valRight treeRight)) accRight)
+        GT -> go treeLeft accLeft (link (link (singletonTree keyLeft valLeft) (Tree (t1 treeMid keyRight valRight treeRight))) accRight)
 
-link :: Tree k v -> Tree k v -> Tree k v
+link :: Monoid v => Tree k v -> Tree k v -> Tree k v
 link (Tree n) (Tree m) = case compareTreeHeight n m of
   Left ngtem -> case linkLeft ngtem n m of
     Left r -> Tree r
-    Right (tiLeft,valMid,tiRight) -> Tree (t1 tiLeft valMid tiRight)
+    Right (tiLeft,keyMid,valMid,tiRight) -> Tree (t1 tiLeft keyMid valMid tiRight)
   Right mgten -> case linkRight mgten n m of
     Left r -> Tree r
-    Right (tiLeft,valMid,tiRight) -> Tree (t1 tiLeft valMid tiRight)
+    Right (tiLeft,keyMid,valMid,tiRight) -> Tree (t1 tiLeft keyMid valMid tiRight)
 
-linkLeft :: forall n m k v. Gte n m -> T n k v -> T m k v -> Either (T n k v) (T n k v, k, v, T n k v)
+linkLeft :: forall n m k v. Monoid v => Gte n m -> T n k v -> T m k v -> Either (T n k v) (T n k v, k, v, T n k v)
 linkLeft gt n m = caseGte
   gt
   (linkLevel n m)
@@ -228,16 +232,16 @@ linkLeft gt n m = caseGte
   where
   f :: forall (p :: Nat). ('S p ~ n) => Gte p m -> Either (T n k v) (T n k v, k, v, T n k v)
   f gte = case n of
-    BR t -> case t of
-      T1 ti1 v1 ti2 -> case linkLeft gte ti2 m of
-        Left tiNew -> Left (t1 ti1 v1 tiNew)
-        Right (tiLeft,valMid,tiRight) -> Left (t2 ti1 v1 tiLeft valMid tiRight)
-      T2 ti1 v1 ti2 v2 ti3 -> case linkLeft gte ti3 m of
-        Left tiNew -> Left (t2 ti1 v1 ti2 v2 tiNew)
-        Right (tiLeft,valMid,tiRight) -> Right (t1 ti1 v1 ti2, v2, t1 tiLeft valMid tiRight)
+    BR _ t -> case t of
+      T1 ti1 k1 v1 ti2 -> case linkLeft gte ti2 m of
+        Left tiNew -> Left (t1 ti1 k1 v1 tiNew)
+        Right (tiLeft,keyMid,valMid,tiRight) -> Left (t2 ti1 k1 v1 tiLeft keyMid valMid tiRight)
+      T2 ti1 k1 v1 ti2 k2 v2 ti3 -> case linkLeft gte ti3 m of
+        Left tiNew -> Left (t2 ti1 k1 v1 ti2 k2 v2 tiNew)
+        Right (tiLeft,keyMid,valMid,tiRight) -> Right (t1 ti1 k1 v1 ti2, k2, v2, t1 tiLeft keyMid valMid tiRight)
 
 
-linkRight :: forall n m k v. Gte m n -> T n k v -> T m k v -> Either (T m k v) (T m k v, k, v, T m k v)
+linkRight :: forall n m k v. Monoid v => Gte m n -> T n k v -> T m k v -> Either (T m k v) (T m k v, k, v, T m k v)
 linkRight gt n m = caseGte
   gt
   (linkLevel n m)
@@ -245,13 +249,13 @@ linkRight gt n m = caseGte
   where
   f :: forall (p :: Nat). ('S p ~ m) => Gte p n -> Either (T m k v) (T m k v, k, v, T m k v)
   f gte = case m of
-    BR t -> case t of
-      T1 ti1 v1 ti2 -> case linkRight gte n ti1 of
-        Left tiNew -> Left (t1 tiNew v1 ti2)
-        Right (tiLeft,valMid,tiRight) -> Left (t2 tiLeft valMid tiRight v1 ti2)
-      T2 ti1 v1 ti2 v2 ti3 -> case linkRight gte n ti1 of
-        Left tiNew -> Left (t2 tiNew v1 ti2 v2 ti3)
-        Right (tiLeft,valMid,tiRight) -> Right (t1 tiLeft valMid tiRight, v1, t1 ti2 v2 ti3)
+    BR _ t -> case t of
+      T1 ti1 k1 v1 ti2 -> case linkRight gte n ti1 of
+        Left tiNew -> Left (t1 tiNew k1 v1 ti2)
+        Right (tiLeft,keyMid,valMid,tiRight) -> Left (t2 tiLeft keyMid valMid tiRight k1 v1 ti2)
+      T2 ti1 k1 v1 ti2 k2 v2 ti3 -> case linkRight gte n ti1 of
+        Left tiNew -> Left (t2 tiNew k1 v1 ti2 k2 v2 ti3)
+        Right (tiLeft,keyMid,valMid,tiRight) -> Right (t1 tiLeft keyMid valMid tiRight, k1, v1, t1 ti2 k2 v2 ti3)
 
 -- This implementation could be CPSed instead. It would probably
 -- look cleaner.
