@@ -16,13 +16,16 @@ module Data.Vicinity
   , union
   , fromList
   , uncheckedConcat
+  , lookup
   , splitLookup
   , singleton
   , singletonTree
   , foldrWithKey
+  , keys
   , toList
   ) where
 
+import Prelude hiding (lookup)
 import Control.Applicative (Applicative(..),(<$>),(<*>))
 import Data.Monoid
 import Data.Foldable (Foldable)
@@ -63,6 +66,16 @@ totalInternal :: Monoid v => T n k v -> v
 totalInternal LF = mempty
 totalInternal (BR _ _ v _) = v
 
+lookup :: (Ord k, Monoid v) => k -> Vicinity k v -> v
+lookup x (Vicinity (Tree tree)) = lookupInternal x tree
+
+lookupInternal :: forall n k v. (Ord k, Monoid v) => k -> T n k v -> v
+lookupInternal x tree = mem tree where
+  mem :: forall m. T m k v -> v
+  mem (BR _ _ _ (T1 a b v c)) = select1 x b (mem a) v (mem c)
+  mem (BR _ _ _ (T2 a b v1 c d v2 e)) = select2 x b d (mem a) v1 (mem c) v2 (mem e)
+  mem LF = mempty
+
 query :: (Ord k, Monoid v) => Maybe k -> Maybe k -> Vicinity k v -> v
 query lo hi (Vicinity (Tree t)) = queryInternal lo hi t
 
@@ -70,9 +83,10 @@ queryInternal :: (Ord k, Monoid v) => Maybe k -> Maybe k -> T n k v -> v
 queryInternal Nothing Nothing t = totalInternal t
 queryInternal Nothing (Just hi) t = queryUpTo hi t
 queryInternal (Just lo) Nothing t = queryDownTo lo t
-queryInternal (Just lo) (Just hi) t = if lo > hi
-  then mempty
-  else queryBounds lo hi t
+queryInternal (Just lo) (Just hi) t = case compare lo hi of
+  GT -> mempty
+  EQ -> lookupInternal lo t
+  LT -> queryBounds lo hi t
 
 -- both a low bound and a high bound are given
 queryBounds :: (Ord k, Monoid v) => k -> k -> T n k v -> v
@@ -94,11 +108,39 @@ queryBounds loBound hiBound br@(BR loChild hiChild v t) = if loBound <= loChild
       T2 tiLeft keyLeft valLeft tiMid keyRight valRight tiRight -> case compare hiBound keyLeft of
         LT -> queryBounds loBound hiBound tiLeft
         EQ -> mappend (queryDownTo loBound tiLeft) valLeft
-        -- working here
-        -- GT -> case compare loBound keyMid of
+        GT -> case compare hiBound keyRight of
+          LT -> case compare loBound keyLeft of
+            LT -> mappend (queryDownTo loBound tiLeft) (mappend valLeft (queryUpTo hiBound tiMid))
+            EQ -> mappend valLeft (queryUpTo hiBound tiMid)
+            GT -> queryBounds loBound hiBound tiMid
+          EQ -> case compare loBound keyLeft of
+            LT -> mappend (queryDownTo loBound tiLeft) (mappend valLeft (mappend (totalInternal tiMid) valRight))
+            EQ -> mappend valLeft (mappend (totalInternal tiMid) valRight)
+            GT -> mappend (queryDownTo loBound tiMid) valRight
+          GT -> case compare loBound keyLeft of
+            LT -> mappend (queryDownTo loBound tiLeft) (mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (queryUpTo hiBound tiRight))))
+            EQ -> mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (queryUpTo hiBound tiRight)))
+            GT -> case compare loBound keyRight of
+              LT -> mappend (queryDownTo loBound tiMid) (mappend valRight (queryUpTo hiBound tiRight))
+              EQ -> mappend valRight (queryUpTo hiBound tiRight)
+              GT -> queryBounds loBound hiBound tiRight
 
 queryDownTo :: (Ord k, Monoid v) => k -> T n k v -> v
-queryDownTo = error "uhoetn"
+queryDownTo _ LF = mempty
+queryDownTo loBound (BR loChild _ v t) = if loBound <= loChild
+  then v
+  else case t of
+    T1 tiLeft keyMid valMid tiRight -> case compare loBound keyMid of
+      LT -> mappend (queryDownTo loBound tiLeft) (mappend valMid (totalInternal tiRight))
+      EQ -> mappend valMid (totalInternal tiRight)
+      GT -> queryDownTo loBound tiRight
+    T2 tiLeft keyLeft valLeft tiMid keyRight valRight tiRight -> case compare loBound keyLeft of
+      LT -> mappend (queryDownTo loBound tiLeft) (mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (totalInternal tiRight))))
+      EQ -> mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (totalInternal tiRight)))
+      GT -> case compare loBound keyRight of
+        LT -> mappend (queryDownTo loBound tiMid) (mappend valRight (totalInternal tiRight))
+        EQ -> mappend valRight (totalInternal tiRight)
+        GT -> queryDownTo loBound tiRight
 
 queryUpTo :: (Ord k, Monoid v) => k -> T n k v -> v
 queryUpTo _ LF = mempty
@@ -121,6 +163,9 @@ queryUpTo hiBound (BR _ hiChild v t) = if hiBound >= hiChild
 
 foldrWithKey :: (k -> v -> a -> a) -> a -> Vicinity k v -> a
 foldrWithKey f a (Vicinity (Tree x)) = foldrWithKeyInternal f a x
+
+keys :: Vicinity k v -> [k]
+keys = foldrWithKey (\k _ ks -> k : ks) []
 
 foldrWithKeyInternal :: (k -> v -> a -> a) -> a -> T n k v -> a
 foldrWithKeyInternal _ a LF = a
