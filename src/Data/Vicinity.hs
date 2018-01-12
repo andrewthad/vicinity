@@ -10,6 +10,8 @@
 {-# OPTIONS_GHC -Wall -Werror -fno-warn-unused-imports #-}
 module Data.Vicinity
   ( Vicinity
+  , query
+  , total
   , insert
   , union
   , fromList
@@ -54,13 +56,76 @@ instance (Ord k, Monoid v) => Monoid (Vicinity k v) where
 instance Foldable (Vicinity k) where
   foldMap f (Vicinity t) = foldMap f t
 
+total :: Monoid v => Vicinity k v -> v
+total (Vicinity (Tree t)) = totalInternal t
+
+totalInternal :: Monoid v => T n k v -> v
+totalInternal LF = mempty
+totalInternal (BR _ _ v _) = v
+
+query :: (Ord k, Monoid v) => Maybe k -> Maybe k -> Vicinity k v -> v
+query lo hi (Vicinity (Tree t)) = queryInternal lo hi t
+
+queryInternal :: (Ord k, Monoid v) => Maybe k -> Maybe k -> T n k v -> v
+queryInternal Nothing Nothing t = totalInternal t
+queryInternal Nothing (Just hi) t = queryUpTo hi t
+queryInternal (Just lo) Nothing t = queryDownTo lo t
+queryInternal (Just lo) (Just hi) t = if lo > hi
+  then mempty
+  else queryBounds lo hi t
+
+-- both a low bound and a high bound are given
+queryBounds :: (Ord k, Monoid v) => k -> k -> T n k v -> v
+queryBounds _ _ LF = mempty
+queryBounds loBound hiBound br@(BR loChild hiChild v t) = if loBound <= loChild
+  then if hiBound >= hiChild
+    then v
+    else queryUpTo hiBound br
+  else if hiBound >= hiChild
+    then queryDownTo loBound br
+    else case t of
+      T1 tiLeft keyMid valMid tiRight -> case compare hiBound keyMid of
+        LT -> queryBounds loBound hiBound tiLeft
+        EQ -> mappend (queryDownTo loBound tiLeft) valMid
+        GT -> case compare loBound keyMid of
+          LT -> mappend (queryDownTo loBound tiLeft) (mappend valMid (queryUpTo hiBound tiRight))
+          EQ -> mappend (queryUpTo hiBound tiRight) valMid
+          GT -> queryBounds loBound hiBound tiRight
+      T2 tiLeft keyLeft valLeft tiMid keyRight valRight tiRight -> case compare hiBound keyLeft of
+        LT -> queryBounds loBound hiBound tiLeft
+        EQ -> mappend (queryDownTo loBound tiLeft) valLeft
+        -- working here
+        -- GT -> case compare loBound keyMid of
+
+queryDownTo :: (Ord k, Monoid v) => k -> T n k v -> v
+queryDownTo = error "uhoetn"
+
+queryUpTo :: (Ord k, Monoid v) => k -> T n k v -> v
+queryUpTo _ LF = mempty
+queryUpTo hiBound (BR _ hiChild v t) = if hiBound >= hiChild
+  then v
+  else case t of
+    T1 tiLeft keyMid valMid tiRight -> case compare hiBound keyMid of
+      LT -> queryUpTo hiBound tiLeft
+      EQ -> mappend (totalInternal tiLeft) valMid
+      GT -> mappend (totalInternal tiLeft) (mappend valMid (queryUpTo hiBound tiRight))
+    T2 tiLeft keyLeft valLeft tiMid keyRight valRight tiRight -> case compare hiBound keyLeft of
+      LT -> queryUpTo hiBound tiLeft
+      EQ -> mappend (totalInternal tiLeft) valLeft
+      GT -> case compare hiBound keyRight of
+        LT -> mappend (totalInternal tiLeft) (mappend valLeft (totalInternal tiMid))
+        EQ -> mappend (totalInternal tiLeft) (mappend valLeft (mappend (totalInternal tiMid) valRight))
+        GT -> mappend (totalInternal tiLeft) (mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (queryUpTo hiBound tiRight))))
+        
+     
+
 foldrWithKey :: (k -> v -> a -> a) -> a -> Vicinity k v -> a
 foldrWithKey f a (Vicinity (Tree x)) = foldrWithKeyInternal f a x
 
 foldrWithKeyInternal :: (k -> v -> a -> a) -> a -> T n k v -> a
 foldrWithKeyInternal _ a LF = a
-foldrWithKeyInternal f a (BR _ (T1 x k v y)) = foldrWithKeyInternal f (f k v (foldrWithKeyInternal f a y)) x
-foldrWithKeyInternal f a (BR _ (T2 x k1 v1 y k2 v2 z)) = 
+foldrWithKeyInternal f a (BR _ _ _ (T1 x k v y)) = foldrWithKeyInternal f (f k v (foldrWithKeyInternal f a y)) x
+foldrWithKeyInternal f a (BR _ _ _ (T2 x k1 v1 y k2 v2 z)) = 
   foldrWithKeyInternal f (f k1 v1 (foldrWithKeyInternal f (f k2 v2 (foldrWithKeyInternal f a z)) y)) x
 
 toList :: Vicinity k v -> [(k,v)]
@@ -82,18 +147,18 @@ select2 x y z xlty xeqy xbtw xeqz xgtz
 
 t1 :: Monoid v => T n k v -> k -> v -> T n k v -> T ('S n) k v
 t1 a bk bv c = case a of
-  LF -> BR bv node
-  BR aggA _ -> case c of
-    BR aggC _ -> BR (mappend aggA (mappend bv aggC)) node
+  LF -> BR bk bk bv node
+  BR farLeft _ aggA _ -> case c of
+    BR _ farRight aggC _ -> BR farLeft farRight (mappend aggA (mappend bv aggC)) node
   where
   node = T1 a bk bv c
 
 t2 :: Monoid v => T n k v -> k -> v -> T n k v -> k -> v -> T n k v -> T ('S n) k v
 t2 a bk bv c dk dv e = case a of
-  LF -> BR (mappend bv dv) node
-  BR aggA _ -> case c of
-    BR aggC _ -> case e of
-      BR aggE _ -> BR (mappend aggA (mappend bv (mappend aggC (mappend dv aggE)))) node
+  LF -> BR bk dk (mappend bv dv) node
+  BR farLeft _ aggA _ -> case c of
+    BR _ _ aggC _ -> case e of
+      BR _ farRight aggE _ -> BR farLeft farRight (mappend aggA (mappend bv (mappend aggC (mappend dv aggE)))) node
   where
   node = T2 a bk bv c dk dv e
 
@@ -103,13 +168,17 @@ data N n k v
   deriving (Show)
 
 data T n k v where
-  BR :: v -> N n k v -> T ('S n) k v
+  BR :: k -- recursively left child
+     -> k -- recursively right child
+     -> v -- concatenation of self and all child values
+     -> N n k v
+     -> T ('S n) k v
   LF :: T 'Z k v
 
 -- This exists for debugging purposes
 instance (Show k, Show v) => Show (T n k v) where
   showsPrec _ LF = showString "LF"
-  showsPrec d (BR v n) = showParen (d > 10)
+  showsPrec d (BR _ _ v n) = showParen (d > 10)
     $ showString "BR "
     . showsPrec 11 v
     . showChar ' '
@@ -127,7 +196,7 @@ type Push t n k v = T n k v -> k -> v -> T n k v -> t
 
 treeToHeight :: T n k v -> SNat n 
 treeToHeight LF = zeroSNat
-treeToHeight (BR _ n) = case n of
+treeToHeight (BR _ _ _ n) = case n of
   T1 t _ _ _ -> succSNat (treeToHeight t)
   T2 t _ _ _ _ _ _ -> succSNat (treeToHeight t)
 
@@ -137,13 +206,16 @@ compareTreeHeight a b = natDiff (treeToHeight a) (treeToHeight b)
 union :: (Ord k, Monoid v) => Vicinity k v -> Vicinity k v -> Vicinity k v
 union (Vicinity a) (Vicinity b) = Vicinity (unionTree a b)
 
+-- we might actually be able to use the left-recursive and
+-- right-recursive child information to decide to terminate
+-- early
 unionTree :: (Ord k, Monoid v) => Tree k v -> Tree k v -> Tree k v
 unionTree a (Tree LF) = a
-unionTree a (Tree (BR _ (T1 LF k v LF))) = insertTree k v a
-unionTree (Tree (BR _ (T1 LF k v LF))) b = insertTree k v b
-unionTree (Tree at) b@(Tree (BR _ _)) = case at of
+unionTree a (Tree (BR _ _ _ (T1 LF k v LF))) = insertTree k v a
+unionTree (Tree (BR _ _ _ (T1 LF k v LF))) b = insertTree k v b
+unionTree (Tree at) b@(Tree (BR _ _ _ _)) = case at of
   LF -> b
-  BR _ an -> 
+  BR _ _ _ an -> 
     let (aLeft,aRight,aKey) = splitNearMedian an
         (bLeft,mbVal,bRight) = splitTreeAt aKey b
         -- The weird insert in the right argument to link is
@@ -180,30 +252,30 @@ uncheckedConcat (Vicinity a) (Vicinity b) = Vicinity (link a b)
 
 _checkNodeValid :: Ord k => T n k v -> T n k v
 _checkNodeValid LF = LF
-_checkNodeValid y@(BR _ x) = case x of
+_checkNodeValid y@(BR _ _ _ x) = case x of
   T1 treeLeft keyMid _ treeRight ->
     let c1 = case treeLeft of
           LF -> True
-          BR _ (T1 _ a _ _) -> a < keyMid
-          BR _ (T2 _ _ _ _ a _ _) -> a < keyMid
+          BR _ _ _ (T1 _ a _ _) -> a < keyMid
+          BR _ _ _ (T2 _ _ _ _ a _ _) -> a < keyMid
         c2 = case treeRight of
           LF -> True
-          BR _ (T1 _ a _ _) -> a > keyMid
-          BR _ (T2 _ a _ _ _ _ _) -> a > keyMid
+          BR _ _ _ (T1 _ a _ _) -> a > keyMid
+          BR _ _ _ (T2 _ a _ _ _ _ _) -> a > keyMid
      in if c1 && c2 then y else error "checkNodeValid: invalid tree in T1 case"
   T2 treeLeft keyLeft _ treeMid keyRight _ treeRight ->
     let c1 = case treeLeft of
           LF -> True
-          BR _ (T1 _ a _ _) -> a < keyLeft
-          BR _ (T2 _ _ _ _ a _ _) -> a < keyLeft
+          BR _ _ _ (T1 _ a _ _) -> a < keyLeft
+          BR _ _ _ (T2 _ _ _ _ a _ _) -> a < keyLeft
         c2 = case treeRight of
           LF -> True
-          BR _ (T1 _ a _ _) -> a > keyRight
-          BR _ (T2 _ a _ _ _ _ _) -> a > keyRight
+          BR _ _ _ (T1 _ a _ _) -> a > keyRight
+          BR _ _ _ (T2 _ a _ _ _ _ _) -> a > keyRight
         c3 = case treeMid of
           LF -> True
-          BR _ (T1 _ a _ _) -> a > keyLeft && a < keyRight
-          BR _ (T2 _ a _ _ b _ _) -> a > keyLeft && b < keyRight
+          BR _ _ _ (T1 _ a _ _) -> a > keyLeft && a < keyRight
+          BR _ _ _ (T2 _ a _ _ b _ _) -> a > keyLeft && b < keyRight
      in if c1 && c2 && c3 && keyLeft < keyRight then y else error "checkNodeValid: invalid tree in T2 case"
 
 -- Everything less than the key goes to the left tree.
@@ -229,12 +301,12 @@ splitTreeAt a (Tree x) = go x empty empty where
     -> Tree k v -- accumulated tree right of split
     -> (Tree k v, Maybe v, Tree k v)
   go LF accLeft accRight = (accLeft,Nothing,accRight)
-  go (BR _ (T1 treeLeft keyMid valMid treeRight)) accLeft accRight =
+  go (BR _ _ _ (T1 treeLeft keyMid valMid treeRight)) accLeft accRight =
     case compare keyMid a of -- descend rightward when middle less than needle
       LT -> go treeRight (link accLeft (link (Tree treeLeft) (singletonTree keyMid valMid))) accRight
       EQ -> (link accLeft (Tree treeLeft), Just valMid, link (Tree treeRight) accRight)
       GT -> go treeLeft accLeft (link (link (singletonTree keyMid valMid) (Tree treeRight)) accRight)
-  go (BR _ (T2 treeLeft keyLeft valLeft treeMid keyRight valRight treeRight)) accLeft accRight =
+  go (BR _ _ _ (T2 treeLeft keyLeft valLeft treeMid keyRight valRight treeRight)) accLeft accRight =
     case compare keyRight a of
       LT -> go treeRight (link accLeft (link (Tree (t1 treeLeft keyLeft valLeft treeMid)) (singletonTree keyRight valRight))) accRight
       EQ -> (link accLeft (Tree (t1 treeLeft keyLeft valLeft treeMid)), Just valRight, link (Tree treeRight) accRight)
@@ -262,7 +334,7 @@ linkLeft gt n m = caseGte
   where
   f :: forall (p :: Nat). ('S p ~ n) => Gte p m -> Either (T n k v) (T n k v, k, v, T n k v)
   f gte = case n of
-    BR _ t -> case t of
+    BR _ _ _ t -> case t of
       T1 ti1 k1 v1 ti2 -> case linkLeft gte ti2 m of
         Left tiNew -> Left (t1 ti1 k1 v1 tiNew)
         Right (tiLeft,keyMid,valMid,tiRight) -> Left (t2 ti1 k1 v1 tiLeft keyMid valMid tiRight)
@@ -279,7 +351,7 @@ linkRight gt n m = caseGte
   where
   f :: forall (p :: Nat). ('S p ~ m) => Gte p n -> Either (T m k v) (T m k v, k, v, T m k v)
   f gte = case m of
-    BR _ t -> case t of
+    BR _ _ _ t -> case t of
       T1 ti1 k1 v1 ti2 -> case linkRight gte n ti1 of
         Left tiNew -> Left (t1 tiNew k1 v1 ti2)
         Right (tiLeft,keyMid,valMid,tiRight) -> Left (t2 tiLeft keyMid valMid tiRight k1 v1 ti2)
@@ -291,7 +363,7 @@ linkRight gt n m = caseGte
 -- look cleaner.
 linkLevel :: Monoid v => T n k v -> T n k v -> Either (T n k v) (T n k v, k, v, T n k v)
 linkLevel LF LF = Left LF
-linkLevel (BR _ n1) (BR _ n2) = case n1 of
+linkLevel (BR _ _ _ n1) (BR _ _ _ n2) = case n1 of
   T1 ti1 v1k v1v ti2 -> case n2 of
     T1 ti3 v2k v2v ti4 -> case linkLevel ti2 ti3 of
       Left tNew -> Left (t2 ti1 v1k v1v tNew v2k v2v ti4)
@@ -316,7 +388,7 @@ insertTree k v (Tree tree) = ins tree Tree (\a bk bv c -> Tree (t1 a bk bv c))
   where
     ins :: forall n t. T n k v -> Keep t n k v -> Push t n k v -> t
     ins LF = \_ push -> push LF k v LF
-    ins (BR _ n) = i n
+    ins (BR _ _ _ n) = i n
       where
         i :: forall p m. ('S p ~ m) => N p k v -> Keep t m k v -> Push t m k v -> t
         i (T2 a bk bv c dk dv e) keep push = select2 k bk dk xltb xeqb xbtw xeqd xgtd
@@ -334,7 +406,7 @@ insertTree k v (Tree tree) = ins tree Tree (\a bk bv c -> Tree (t1 a bk bv c))
             xeqb = keep (t1 a k (mappend v bv) c)
 
 singletonTree :: k -> v -> Tree k v
-singletonTree k v = Tree (BR v (T1 LF k v LF))
+singletonTree k v = Tree (BR k k v (T1 LF k v LF))
 
 singleton :: k -> v -> Vicinity k v
 singleton k v = Vicinity (singletonTree k v)
@@ -349,8 +421,8 @@ instance Foldable (Tree k) where
       foldm f (Tree t) = fm t
         where
           fm :: forall n. T n k v -> m
-          fm (BR _ (T1 a _ bv c)) = fm a <> f bv <> fm c
-          fm (BR _ (T2 a _ bv c _ dv e)) = fm a <> f bv <> fm c <> f dv <> fm e
+          fm (BR _ _ _ (T1 a _ bv c)) = fm a <> f bv <> fm c
+          fm (BR _ _ _ (T2 a _ bv c _ dv e)) = fm a <> f bv <> fm c <> f dv <> fm e
           fm LF = mempty
 
 
