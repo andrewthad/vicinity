@@ -10,19 +10,24 @@
 {-# OPTIONS_GHC -Wall -Werror -fno-warn-unused-imports #-}
 module Data.Vicinity
   ( Vicinity
+    -- * Query
   , query
   , total
+  , lookup
+  , splitLookup
+    -- * Construct
+  , singleton
   , insert
   , union
   , fromList
-  , uncheckedConcat
-  , lookup
-  , splitLookup
-  , singleton
-  , singletonTree
+    -- * Deconstruct
   , foldrWithKey
   , keys
   , toList
+    -- * Unsafe
+  , uncheckedConcat
+    -- * Example
+    -- $example
   ) where
 
 import Prelude hiding (lookup)
@@ -37,6 +42,9 @@ import Data.Nat.Arithmetic (SNat,Gte,caseGte,natDiff,succSNat,zeroSNat)
 import qualified Data.Semigroup
 import qualified Data.Foldable as F
 
+-- | A map-like container optimized for the execution of range queries.
+--   The key must have an 'Ord' instance and the value must have 'Monoid'
+--   instance whose append operation is also commutative.
 newtype Vicinity k v = Vicinity (Tree k v)
 
 instance (Show k, Show v) => Show (Vicinity k v) where
@@ -59,6 +67,8 @@ instance (Ord k, Monoid v) => Monoid (Vicinity k v) where
 instance Foldable (Vicinity k) where
   foldMap f (Vicinity t) = foldMap f t
 
+-- | O(1). The monoidal concatenation of all values in the map. This
+--   is equivalent to @'query' 'Nothing' 'Nothing'@.
 total :: Monoid v => Vicinity k v -> v
 total (Vicinity (Tree t)) = totalInternal t
 
@@ -76,7 +86,13 @@ lookupInternal x tree = mem tree where
   mem (BR _ _ _ (T2 a b v1 c d v2 e)) = select2 x b d (mem a) v1 (mem c) v2 (mem e)
   mem LF = mempty
 
-query :: (Ord k, Monoid v) => Maybe k -> Maybe k -> Vicinity k v -> v
+-- | Get the monoidal concatenation of all values in the range. The bounds
+--   are both inclusive. Either bound can be omitted.
+query :: (Ord k, Monoid v)
+  => Maybe k -- ^ Lower bound
+  -> Maybe k -- ^ Upper bound
+  -> Vicinity k v -- ^ Vicinity
+  -> v
 query lo hi (Vicinity (Tree t)) = queryInternal lo hi t
 
 queryInternal :: (Ord k, Monoid v) => Maybe k -> Maybe k -> T n k v -> v
@@ -159,11 +175,11 @@ queryUpTo hiBound (BR _ hiChild v t) = if hiBound >= hiChild
         EQ -> mappend (totalInternal tiLeft) (mappend valLeft (mappend (totalInternal tiMid) valRight))
         GT -> mappend (totalInternal tiLeft) (mappend valLeft (mappend (totalInternal tiMid) (mappend valRight (queryUpTo hiBound tiRight))))
         
-     
-
+-- | Fold over the keys in the map along with their values.
 foldrWithKey :: (k -> v -> a -> a) -> a -> Vicinity k v -> a
 foldrWithKey f a (Vicinity (Tree x)) = foldrWithKeyInternal f a x
 
+-- | Get the keys of the map.
 keys :: Vicinity k v -> [k]
 keys = foldrWithKey (\k _ ks -> k : ks) []
 
@@ -173,12 +189,19 @@ foldrWithKeyInternal f a (BR _ _ _ (T1 x k v y)) = foldrWithKeyInternal f (f k v
 foldrWithKeyInternal f a (BR _ _ _ (T2 x k1 v1 y k2 v2 z)) = 
   foldrWithKeyInternal f (f k1 v1 (foldrWithKeyInternal f (f k2 v2 (foldrWithKeyInternal f a z)) y)) x
 
+-- | Convert the map to a list of key-value pairs.
 toList :: Vicinity k v -> [(k,v)]
 toList = foldrWithKey (\k v a -> (k,v) : a) []
 
+-- | Build a map from a list of key-value pairs.
 fromList :: (Ord k, Monoid v) => [(k,v)] -> Vicinity k v
 fromList = foldr (\(k,v) -> insert k v) (Vicinity empty)
 
+-- | Insert a key associated with a value into the map. If the key
+--   already exists, the existing value and the new value are combined
+--   using the 'Monoid' instance for @v@. The implementation of 'mappend'
+--   is expected to be commutative, so the order in which the old and
+--   new values are combined is not specified.
 insert :: (Ord k, Monoid v) => k -> v -> Vicinity k v -> Vicinity k v
 insert k v (Vicinity t) = Vicinity (insertTree k v t)
 
@@ -248,6 +271,10 @@ treeToHeight (BR _ _ _ n) = case n of
 compareTreeHeight :: T n k v -> T m k v -> Either (Gte n m) (Gte m n)
 compareTreeHeight a b = natDiff (treeToHeight a) (treeToHeight b)
 
+-- | Combine two maps. If the same key exists in both maps, the values
+--   associated with it are combined using the 'Monoid' instance for @v@.
+--   Note that the 'Monoid' instance of 'Vicinity' defines 'mappend' as
+--   'union'.
 union :: (Ord k, Monoid v) => Vicinity k v -> Vicinity k v -> Vicinity k v
 union (Vicinity a) (Vicinity b) = Vicinity (unionTree a b)
 
@@ -288,10 +315,16 @@ splitNearMedian n = case n of
   T1 treeLeft keyMid valMid treeRight ->
     (Tree treeLeft, link (singletonTree keyMid valMid) (Tree treeRight), keyMid)
 
+-- | Split the map at the target key. The map that is the first element of the tuple
+--   has keys lower than the target. The map that is the third element of the tuple
+--   has keys higher than the target. The second element of the tuple is the value
+--   at the key if the key was found.
 splitLookup :: (Ord k, Monoid v) => k -> Vicinity k v -> (Vicinity k v, Maybe v, Vicinity k v)
 splitLookup a (Vicinity t) = case splitTreeAt a t of
   (x,y,z) -> (Vicinity x, y, Vicinity z)
 
+-- | Combine two vicinities. All keys is the first one must be
+--   less than all keys in the second one.
 uncheckedConcat :: Monoid v => Vicinity k v -> Vicinity k v -> Vicinity k v
 uncheckedConcat (Vicinity a) (Vicinity b) = Vicinity (link a b)
 
@@ -453,6 +486,7 @@ insertTree k v (Tree tree) = ins tree Tree (\a bk bv c -> Tree (t1 a bk bv c))
 singletonTree :: k -> v -> Tree k v
 singletonTree k v = Tree (BR k k v (T1 LF k v LF))
 
+-- | Create a map with a single key-value pair.
 singleton :: k -> v -> Vicinity k v
 singleton k v = Vicinity (singletonTree k v)
 
@@ -471,3 +505,73 @@ instance Foldable (Tree k) where
           fm LF = mempty
 
 
+{- $example
+A 'Vicinity' performs lookups of a commutative monoid over a key range in optimal
+time. Consider a collection of books in print that share a common set of properties:
+
+>>> data Book = Book { title :: String, author :: String, year :: Int, cost :: Int }
+>>> let b1 = Book "The Wings of Vanessa" "Diana Alexander" 1974 7
+>>> let b2 = Book "Dweller and a Card" "Diana Alexander" 1977 4
+>>> let b3 = Book "The Weeping Blight" "Diana Alexander" 1980 8
+>>> let b4 = Book "The Northern Dog" "Thomas Brown" 1982 2
+>>> let b5 = Book "Bridge and Blade" "Thomas Brown" 1988 3
+>>> let b6 = Book "The Manor" "Bernice McNeilly" 1983 11
+>>> let b7 = Book "Southern Pirate" "Donna Arnold" 1985 23
+>>> let b8 = Book "Without the Mesa" "Donna Arnold" 1991 25
+>>> let b9 = Book "The Hollywood Sky" "Preston Richey" 1975 10
+>>> let books = [b1,b2,b3,b4,b5,b6,b7,b8,b9]
+
+We would like to find the cheapest books published within various time ranges.
+So, we must also define a price metric that has a commutative semigroup instance:
+
+>>> data Price = Price { ptitle :: String, pcost :: Int } deriving (Show)
+>>> appendPrice (Price t1 c1) (Price t2 c2) = case compare c1 c2 of {LT -> Price t1 c1; EQ -> Price (min t1 t2) c1; GT -> Price t2 c2}
+>>> instance Semigroup Price where { (<>) = appendPrice }
+
+What does the append operator do here? It chooses the information for the
+value with the lower price. In the event of a tie (handled by the @EQ@ case),
+it choose the lexographically lower title. Breaking the tie this way
+ensures that append is commutative. However, we're still missing
+a @Monoid@ instance. Notice that @Price@ cannot be made into a @Monoid@,
+since there is no sensible and law-abiding @mempty@. We will
+need to lift @Price@ to get a @Monoid@. We can do this with
+@Data.Semigroup.Option@. Let\'s write a function to turn our
+collection of books into @Option Price@:
+
+>>> import Data.Semigroup (Option(..))
+>>> toPrice (Book t _ _ c) = Option (Just (Price t c))
+>>> :t toPrice
+toPrice :: Book -> Option Price
+
+Now, we can fold over the collection of books to build our index of
+the cheapest book in each time range:
+
+>>> let ixc = foldMap (\b -> singleton (year b) (toPrice b)) books
+>>> :t ixc
+ixc :: Vicinity Int (Option Price)
+>>> query (Just 1977) (Just 1986) ixc
+Option {getOption = Just (Price {ptitle = "The Northern Dog", pcost = 2})}
+
+Cool. We could pick other commutative monoidal metrics as wells. We could
+handle things like the set of authors that published during the time
+range or the total number of books published during the time range. Or we
+could just do them all at once using the monoid instance of a three-tuple:
+
+>>> import Data.Set (Set)
+>>> import qualified Data.Set as S
+>>> type Metrics = (Option Price, Set String, Sum Int)
+>>> printMetrics (a,b,c) = print a >> print b >> print c
+>>> toMetrics b = (toPrice b, S.singleton (author b), Sum (1 :: Int))
+>>> :t toMetrics
+toMetrics :: Book -> (Option Price, Set String, Sum Int)
+>>> let ixa = foldMap (\b -> singleton (year b) (toMetrics b)) books
+>>> printMetrics (query (Just 1974) (Just 1989) ixa)
+Option {getOption = Just (Price {ptitle = "The Northern Dog", pcost = 2})}
+fromList ["Bernice McNeilly","Diana Alexander","Donna Arnold","Preston Richey","Thomas Brown"]
+Sum {getSum = 8}
+>>> printMetrics (query (Just 1982) (Just 1985) ixa)
+Option {getOption = Just (Price {ptitle = "The Northern Dog", pcost = 2})}
+fromList ["Bernice McNeilly","Donna Arnold","Thomas Brown"]
+Sum {getSum = 3}
+
+-}

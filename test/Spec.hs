@@ -53,7 +53,7 @@ propLookup = forAllShrink arbitrary shrink $ \(vic :: Vicinity Int (Sum Word)) -
 
 genMapAndInnerBounds :: Gen (Map Word Word, Word, Word)
 genMapAndInnerBounds = do
-  xs <- vector 20
+  xs <- vector 100
   let m = M.fromList xs
   case M.lookupMin m of
     Nothing -> error "genMapAndInnerBounds: not possible"
